@@ -100,8 +100,8 @@ class SPADEResBlock(nn.Module):
 
 class AliasFreeUpsample(nn.Module):
     """
-    Alias-free upsampling for high-quality generation.
-    Uses low-pass filtering to reduce aliasing artifacts.
+    Symmetric upsampling to match downsampling architecture.
+    Uses ConvTranspose2d with same kernel/stride/padding as downsampling.
     """
     
     def __init__(self, in_channels: int, out_channels: int, scale: int = 2):
@@ -109,34 +109,19 @@ class AliasFreeUpsample(nn.Module):
         
         self.scale = scale
         
-        # Learned upsampling
-        self.conv = nn.Conv2d(in_channels, out_channels * scale * scale, 3, 1, 1)
-        self.pixel_shuffle = nn.PixelShuffle(scale)
+        # Use ConvTranspose2d to be symmetric with Conv2d(kernel=4, stride=2, padding=1) in downsampling
+        self.up = nn.ConvTranspose2d(in_channels, out_channels, 
+                                     kernel_size=4, stride=2, padding=1, 
+                                     output_padding=0)
         
-        # Low-pass filter for anti-aliasing
-        self.register_buffer('filter', self._create_filter())
-        
-    def _create_filter(self) -> torch.Tensor:
-        """Create Gaussian low-pass filter."""
-        kernel_size = 4
-        sigma = 0.5
-        
-        x = torch.arange(kernel_size) - (kernel_size - 1) / 2
-        kernel_1d = torch.exp(-x**2 / (2 * sigma**2))
-        kernel_2d = kernel_1d.unsqueeze(0) * kernel_1d.unsqueeze(1)
-        kernel_2d = kernel_2d / kernel_2d.sum()
-        
-        return kernel_2d.unsqueeze(0).unsqueeze(0)
+        # Normalization and activation
+        self.norm = nn.InstanceNorm2d(out_channels)
+        self.act = nn.LeakyReLU(0.2, inplace=True)
         
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        x = self.conv(x)
-        x = self.pixel_shuffle(x)
-        
-        # Apply low-pass filter
-        b, c, h, w = x.shape
-        filter_expanded = self.filter.expand(c, 1, -1, -1)
-        x = F.conv2d(x, filter_expanded, padding=1, groups=c)
-        
+        x = self.up(x)
+        x = self.norm(x)
+        x = self.act(x)
         return x
 
 
@@ -297,9 +282,6 @@ class HRGenerator(nn.Module):
             # Skip connection
             if i < len(skips):
                 skip = skips[-(i+1)]
-                # Resize spatially if needed
-                if x.shape[2:] != skip.shape[2:]:
-                    skip = F.interpolate(skip, size=x.shape[2:], mode='bilinear', align_corners=True)
                 # Project channels to match
                 skip = skip_conv(skip)
                 x = x + skip
