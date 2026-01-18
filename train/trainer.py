@@ -38,13 +38,22 @@ class BaseTrainer(ABC):
         self.global_step = 0
         self.best_metric = float('inf')
         
+        # Extract nested config values
+        training_config = self.config.get('training', {})
+        checkpoint_config = self.config.get('checkpoint', {})
+        
         # Logging
-        log_dir = self.config.get('log_dir', './logs')
+        log_dir = self.config.get('log_dir', training_config.get('log_dir', './logs'))
         self.writer = SummaryWriter(log_dir)
         
-        # Checkpoint directory
-        self.checkpoint_dir = self.config.get('checkpoint_dir', './checkpoints')
+        # Checkpoint directory - support both flat and nested config
+        self.checkpoint_dir = checkpoint_config.get('save_dir', 
+                              self.config.get('checkpoint_dir', './checkpoints'))
         os.makedirs(self.checkpoint_dir, exist_ok=True)
+        
+        # Save interval
+        self.save_interval = training_config.get('save_interval', 
+                             self.config.get('save_interval', 10))
         
     @abstractmethod
     def train_step(self, batch: Dict[str, torch.Tensor]) -> Dict[str, float]:
@@ -139,15 +148,16 @@ class BaseTrainer(ABC):
             if val_losses:
                 print(f"Epoch {epoch} val losses: {val_losses}")
                 
-            # Save checkpoint
-            if epoch % self.config.get('save_interval', 10) == 0:
+            # Save checkpoint at intervals
+            if (epoch + 1) % self.save_interval == 0:
                 self.save_checkpoint(f'epoch_{epoch}.pth')
                 
-            # Save best model
-            metric = val_losses.get('total', train_losses.get('total', 0))
+            # Save best model based on loss
+            metric = val_losses.get('total', train_losses.get('total', float('inf')))
             if metric < self.best_metric:
                 self.best_metric = metric
                 self.save_checkpoint('best.pth')
+                print(f"New best model saved with metric: {metric:.4f}")
                 
         # Save final model
         self.save_checkpoint('final.pth')
