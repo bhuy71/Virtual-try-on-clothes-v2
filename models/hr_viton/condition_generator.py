@@ -158,8 +158,9 @@ class AppearanceFlowEstimator(nn.Module):
         self.up_layers = nn.ModuleList()
         for i in range(n_downsample):
             out_ch = max(in_ch // 2, ngf)
-            # Double input channels for skip connection
-            self.up_layers.append(UpBlock(in_ch + (in_ch if i > 0 else 0), out_ch))
+            # Skip connection doubles input channels (current + skip from encoder)
+            skip_ch = in_ch if i < n_downsample - 1 else 0
+            self.up_layers.append(UpBlock(in_ch + skip_ch, out_ch))
             in_ch = out_ch
             
         # Flow prediction
@@ -190,13 +191,21 @@ class AppearanceFlowEstimator(nn.Module):
         # Bottleneck
         x = self.bottleneck(x)
         
-        # Decoder
+        # Decoder with skip connections from encoder
         for i, up in enumerate(self.up_layers):
-            skip = skips[-(i+2)] if i < len(skips) - 1 else None
-            if skip is not None and i > 0:
-                x = up(torch.cat([x, skip], dim=1) if skip.shape[1] == x.shape[1] else x, skip)
-            else:
-                x = up(x, skip)
+            # Get corresponding skip connection from encoder
+            skip_idx = -(i + 2)  # Skip from encoder (reverse order)
+            skip = skips[skip_idx] if -skip_idx <= len(skips) else None
+            
+            # Concatenate with skip if available
+            if skip is not None and i < len(self.up_layers) - 1:
+                # Ensure spatial dimensions match
+                if x.shape[2:] != skip.shape[2:]:
+                    x = F.interpolate(x, size=skip.shape[2:], mode='bilinear', align_corners=True)
+                x = torch.cat([x, skip], dim=1)
+            
+            # Apply upsampling block
+            x = up(x, None)  # Skip already concatenated above
                 
         # Predict flow
         flow = self.flow_conv(x)
