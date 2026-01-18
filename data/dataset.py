@@ -1,0 +1,319 @@
+"""
+PyTorch Dataset classes for Virtual Try-On
+
+Supports:
+- VITON dataset format
+- VITON-HD dataset format
+"""
+
+import os
+import json
+import numpy as np
+from PIL import Image
+import torch
+from torch.utils.data import Dataset
+import torchvision.transforms as transforms
+from typing import Dict, Tuple, Optional, List
+
+
+class VITONDataset(Dataset):
+    """
+    Dataset for VITON/VITON-HD virtual try-on.
+    
+    Expected directory structure:
+    data_root/
+    ├── train/
+    │   ├── image/           # Person images
+    │   ├── cloth/           # Clothing images
+    │   ├── cloth-mask/      # Clothing masks
+    │   ├── image-parse/     # Person parsing maps
+    │   ├── agnostic/        # Agnostic person (optional)
+    │   ├── openpose-img/    # Pose visualization
+    │   └── openpose-json/   # Pose keypoints
+    ├── test/
+    │   └── ... (same structure)
+    ├── train_pairs.txt
+    └── test_pairs.txt
+    """
+    
+    def __init__(
+        self,
+        data_root: str,
+        split: str = 'train',
+        image_size: Tuple[int, int] = (256, 192),
+        transform: Optional[transforms.Compose] = None,
+        semantic_nc: int = 13,
+    ):
+        """
+        Args:
+            data_root: Root directory of the dataset
+            split: 'train' or 'test'
+            image_size: Target size (height, width)
+            transform: Optional transforms to apply
+            semantic_nc: Number of semantic classes
+        """
+        self.data_root = data_root
+        self.split = split
+        self.image_size = image_size
+        self.semantic_nc = semantic_nc
+        
+        # Set up directories
+        self.image_dir = os.path.join(data_root, split, 'image')
+        self.cloth_dir = os.path.join(data_root, split, 'cloth')
+        self.cloth_mask_dir = os.path.join(data_root, split, 'cloth-mask')
+        self.parse_dir = os.path.join(data_root, split, 'image-parse')
+        self.agnostic_dir = os.path.join(data_root, split, 'agnostic')
+        self.pose_dir = os.path.join(data_root, split, 'openpose-json')
+        
+        # Load pairs
+        pairs_file = os.path.join(data_root, f'{split}_pairs.txt')
+        self.pairs = self._load_pairs(pairs_file)
+        
+        # Set up transforms
+        if transform is None:
+            self.transform = transforms.Compose([
+                transforms.Resize(image_size),
+                transforms.ToTensor(),
+                transforms.Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5])
+            ])
+        else:
+            self.transform = transform
+            
+        self.mask_transform = transforms.Compose([
+            transforms.Resize(image_size, interpolation=transforms.InterpolationMode.NEAREST),
+            transforms.ToTensor(),
+        ])
+        
+    def _load_pairs(self, pairs_file: str) -> List[Tuple[str, str]]:
+        """Load image-cloth pairs from file."""
+        pairs = []
+        
+        if os.path.exists(pairs_file):
+            with open(pairs_file, 'r') as f:
+                for line in f:
+                    parts = line.strip().split()
+                    if len(parts) >= 2:
+                        pairs.append((parts[0], parts[1]))
+        else:
+            # Auto-generate pairs from image directory
+            print(f"Warning: {pairs_file} not found. Auto-generating pairs...")
+            if os.path.exists(self.image_dir):
+                for img_file in sorted(os.listdir(self.image_dir)):
+                    if img_file.endswith(('.jpg', '.png')):
+                        cloth_file = img_file.replace('_0.jpg', '_1.jpg')
+                        pairs.append((img_file, cloth_file))
+                        
+        return pairs
+        
+    def __len__(self) -> int:
+        return len(self.pairs)
+        
+    def _load_pose(self, pose_path: str) -> torch.Tensor:
+        """Load pose keypoints and convert to heatmaps."""
+        h, w = self.image_size
+        n_keypoints = 18
+        pose_heatmaps = torch.zeros(n_keypoints, h, w)
+        
+        if os.path.exists(pose_path):
+            with open(pose_path, 'r') as f:
+                pose_data = json.load(f)
+                
+            if 'people' in pose_data and len(pose_data['people']) > 0:
+                keypoints = pose_data['people'][0].get('pose_keypoints_2d', [])
+                
+                # Reshape to (n_keypoints, 3)
+                keypoints = np.array(keypoints).reshape(-1, 3)
+                
+                # Generate Gaussian heatmaps
+                sigma = 6
+                for i, (x, y, conf) in enumerate(keypoints[:n_keypoints]):
+                    if conf > 0.1:
+                        # Normalize coordinates to target size
+                        x = int(x * w / 768)  # Assuming original width 768
+                        y = int(y * h / 1024)  # Assuming original height 1024
+                        
+                        if 0 <= x < w and 0 <= y < h:
+                            x_grid, y_grid = torch.meshgrid(
+                                torch.arange(w), torch.arange(h), indexing='xy'
+                            )
+                            pose_heatmaps[i] = torch.exp(
+                                -((x_grid - x).float()**2 + (y_grid - y).float()**2) / (2 * sigma**2)
+                            )
+                            
+        return pose_heatmaps
+        
+    def _load_parse(self, parse_path: str) -> torch.Tensor:
+        """Load parsing map and convert to one-hot encoding."""
+        h, w = self.image_size
+        
+        if os.path.exists(parse_path):
+            parse_img = Image.open(parse_path).convert('L')
+            parse_img = parse_img.resize((w, h), Image.NEAREST)
+            parse_array = np.array(parse_img)
+        else:
+            parse_array = np.zeros((h, w), dtype=np.uint8)
+            
+        # Convert to one-hot encoding
+        parse_onehot = torch.zeros(self.semantic_nc, h, w)
+        for i in range(self.semantic_nc):
+            parse_onehot[i] = torch.from_numpy((parse_array == i).astype(np.float32))
+            
+        return parse_onehot
+        
+    def __getitem__(self, idx: int) -> Dict[str, torch.Tensor]:
+        """Get a sample from the dataset."""
+        image_name, cloth_name = self.pairs[idx]
+        
+        # Load person image
+        image_path = os.path.join(self.image_dir, image_name)
+        person_image = Image.open(image_path).convert('RGB')
+        person = self.transform(person_image)
+        
+        # Load cloth image
+        cloth_path = os.path.join(self.cloth_dir, cloth_name)
+        if os.path.exists(cloth_path):
+            cloth_image = Image.open(cloth_path).convert('RGB')
+        else:
+            cloth_image = Image.new('RGB', self.image_size[::-1], (255, 255, 255))
+        cloth = self.transform(cloth_image)
+        
+        # Load cloth mask
+        cloth_mask_path = os.path.join(
+            self.cloth_mask_dir, 
+            cloth_name.replace('.jpg', '.png').replace('.JPG', '.png')
+        )
+        if os.path.exists(cloth_mask_path):
+            cloth_mask = Image.open(cloth_mask_path).convert('L')
+            cloth_mask = self.mask_transform(cloth_mask)
+        else:
+            cloth_mask = torch.ones(1, *self.image_size)
+            
+        # Load agnostic representation
+        agnostic_path = os.path.join(self.agnostic_dir, image_name)
+        if os.path.exists(agnostic_path):
+            agnostic = Image.open(agnostic_path).convert('RGB')
+            agnostic = self.transform(agnostic)
+        else:
+            agnostic = person.clone()
+            
+        # Load pose
+        pose_path = os.path.join(
+            self.pose_dir,
+            image_name.replace('.jpg', '.json').replace('.png', '.json')
+        )
+        pose = self._load_pose(pose_path)
+        
+        # Load parsing
+        parse_path = os.path.join(
+            self.parse_dir,
+            image_name.replace('.jpg', '.png')
+        )
+        parse = self._load_parse(parse_path)
+        
+        return {
+            'image': person,
+            'cloth': cloth,
+            'cloth_mask': cloth_mask,
+            'agnostic': agnostic,
+            'pose': pose,
+            'parse': parse,
+            'image_name': image_name,
+            'cloth_name': cloth_name,
+        }
+
+
+class VITONHDDataset(VITONDataset):
+    """
+    Dataset for VITON-HD with high-resolution support.
+    Extends VITONDataset with additional processing for high-res images.
+    """
+    
+    def __init__(
+        self,
+        data_root: str,
+        split: str = 'train',
+        image_size: Tuple[int, int] = (1024, 768),
+        **kwargs
+    ):
+        super().__init__(data_root, split, image_size, **kwargs)
+        
+        # Additional directories for HR-VITON
+        self.densepose_dir = os.path.join(data_root, split, 'densepose')
+        
+    def _load_densepose(self, densepose_path: str) -> torch.Tensor:
+        """Load DensePose representation."""
+        h, w = self.image_size
+        
+        if os.path.exists(densepose_path):
+            densepose = Image.open(densepose_path).convert('RGB')
+            densepose = densepose.resize((w, h), Image.BILINEAR)
+            densepose = transforms.ToTensor()(densepose)
+        else:
+            densepose = torch.zeros(3, h, w)
+            
+        return densepose
+        
+    def __getitem__(self, idx: int) -> Dict[str, torch.Tensor]:
+        """Get a sample with additional high-resolution features."""
+        sample = super().__getitem__(idx)
+        
+        # Load DensePose if available
+        image_name = sample['image_name']
+        densepose_path = os.path.join(
+            self.densepose_dir,
+            image_name.replace('.jpg', '.png')
+        )
+        sample['densepose'] = self._load_densepose(densepose_path)
+        
+        return sample
+
+
+def get_dataloader(
+    data_root: str,
+    split: str = 'train',
+    batch_size: int = 8,
+    num_workers: int = 4,
+    image_size: Tuple[int, int] = (256, 192),
+    shuffle: bool = True,
+    high_res: bool = False
+) -> torch.utils.data.DataLoader:
+    """Create a DataLoader for virtual try-on dataset."""
+    
+    if high_res:
+        dataset = VITONHDDataset(data_root, split, image_size)
+    else:
+        dataset = VITONDataset(data_root, split, image_size)
+        
+    dataloader = torch.utils.data.DataLoader(
+        dataset,
+        batch_size=batch_size,
+        shuffle=shuffle,
+        num_workers=num_workers,
+        pin_memory=True,
+        drop_last=(split == 'train')
+    )
+    
+    return dataloader
+
+
+# Test the dataset
+if __name__ == '__main__':
+    import matplotlib.pyplot as plt
+    
+    # Test with dummy data
+    data_root = './data/viton'
+    
+    if os.path.exists(data_root):
+        dataset = VITONDataset(data_root, split='train')
+        print(f"Dataset size: {len(dataset)}")
+        
+        if len(dataset) > 0:
+            sample = dataset[0]
+            print("Sample keys:", sample.keys())
+            print("Image shape:", sample['image'].shape)
+            print("Cloth shape:", sample['cloth'].shape)
+            print("Pose shape:", sample['pose'].shape)
+            print("Parse shape:", sample['parse'].shape)
+    else:
+        print(f"Data root not found: {data_root}")
+        print("Please download the dataset first using: python data/download_dataset.py")
