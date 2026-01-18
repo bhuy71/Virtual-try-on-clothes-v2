@@ -1,0 +1,73 @@
+# CP-VTON Configuration
+# Traditional Characteristic-Preserving Virtual Try-On Network
+
+# Model settings
+model:
+  name: "cp_vton"
+  input_size: [256, 192]  # height, width
+  
+# GMM (Geometric Matching Module) settings
+gmm:
+  input_nc: 22  # 3 (cloth) + 19 (pose heatmap)
+  output_nc: 3
+  ngf: 64
+  num_downs: 5
+  grid_size: 5
+  
+# TOM (Try-On Module) settings  
+tom:
+  input_nc: 25  # 3 (person) + 3 (cloth) + 19 (pose)
+  output_nc: 4  # 3 (RGB) + 1 (composition mask)
+  ngf: 64
+  num_downs: 6
+
+# Training settings
+training:
+  # Stage 1: GMM training
+  gmm:
+    epochs: 200
+    batch_size: 8
+    lr: 0.0001
+    beta1: 0.5
+    beta2: 0.999
+    
+  # Stage 2: TOM training
+  tom:
+    epochs: 200
+    batch_size: 8
+    lr: 0.0001
+    beta1: 0.5
+    beta2: 0.999
+
+# Loss weights
+loss:
+  gmm:
+    l1_weight: 1.0
+  tom:
+    l1_weight: 1.0
+    perceptual_weight: 1.0
+    composition_weight: 1.0
+
+# Data settings
+data:
+  dataset: "viton"
+  data_root: "./data/viton"
+  train_pairs: "train_pairs.txt"
+  test_pairs: "test_pairs.txt"
+  num_workers: 4
+  
+# Augmentation
+augmentation:
+  horizontal_flip: true
+  color_jitter: false
+  
+# Logging
+logging:
+  log_interval: 100
+  save_interval: 10  # epochs
+  sample_interval: 500
+  
+# Checkpoint
+checkpoint:
+  save_dir: "./checkpoints/cp_vton"
+  resume: null

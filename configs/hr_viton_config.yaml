@@ -1,0 +1,100 @@
+# HR-VITON Configuration
+# State-of-the-Art High-Resolution Virtual Try-On
+
+# Model settings
+model:
+  name: "hr_viton"
+  input_size: [1024, 768]  # height, width
+  semantic_nc: 13  # number of semantic classes
+
+# Condition Generator settings
+condition_generator:
+  input_nc: 16  # 3 (agnostic) + 13 (semantic)
+  output_nc: 13  # semantic segmentation
+  ngf: 64
+  n_downsampling: 4
+  n_blocks: 9
+  
+# Alias-Free Generator settings
+generator:
+  input_nc: 19  # 3 (warped cloth) + 3 (agnostic) + 13 (seg)
+  output_nc: 3
+  ngf: 64
+  n_downsampling: 4
+  n_blocks: 9
+  use_spade: true
+  
+# Discriminator settings
+discriminator:
+  input_nc: 3
+  ndf: 64
+  n_layers: 4
+  num_D: 2  # multi-scale discriminator
+  
+# Warping module settings
+warping:
+  use_appearance_flow: true
+  flow_estimator:
+    input_nc: 6
+    ngf: 32
+    n_downsampling: 4
+
+# Training settings
+training:
+  epochs: 100
+  batch_size: 4
+  
+  # Optimizer settings
+  optimizer:
+    type: "adam"
+    lr_g: 0.0001
+    lr_d: 0.0004
+    beta1: 0.0
+    beta2: 0.9
+    
+  # Learning rate scheduler
+  scheduler:
+    type: "step"
+    step_size: 30
+    gamma: 0.5
+    
+# Loss weights
+loss:
+  adversarial_weight: 1.0
+  feature_matching_weight: 10.0
+  perceptual_weight: 10.0
+  l1_weight: 1.0
+  parsing_weight: 1.0
+  warping_weight: 0.1
+  
+# Data settings
+data:
+  dataset: "viton-hd"
+  data_root: "./data/viton-hd"
+  train_pairs: "train_pairs.txt"
+  test_pairs: "test_pairs.txt"
+  num_workers: 8
+  
+# Augmentation
+augmentation:
+  horizontal_flip: true
+  color_jitter: true
+  random_affine: false
+  
+# Logging
+logging:
+  log_interval: 50
+  save_interval: 5  # epochs
+  sample_interval: 200
+  use_wandb: true
+  project_name: "virtual-tryon"
+  
+# Checkpoint
+checkpoint:
+  save_dir: "./checkpoints/hr_viton"
+  resume: null
+  
+# Inference settings
+inference:
+  batch_size: 1
+  num_test_samples: 100
