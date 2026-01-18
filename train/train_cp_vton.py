@@ -75,16 +75,29 @@ class GMMTrainer(BaseTrainer):
     ):
         super().__init__(model, train_loader, val_loader, device, config)
         
-        # Optimizer
+        # Optimizer - use higher LR for GMM (1e-4 is too slow)
         training_config = config.get('training', {}).get('gmm', {})
         self.optimizer = torch.optim.Adam(
             self.model.parameters(),
-            lr=training_config.get('lr', 0.0001),
+            lr=training_config.get('lr', 0.0002),  # Increased from 0.0001
             betas=(training_config.get('beta1', 0.5), training_config.get('beta2', 0.999))
         )
         
-        # Loss
+        # Learning rate scheduler for better convergence
+        self.scheduler = torch.optim.lr_scheduler.StepLR(
+            self.optimizer, step_size=10, gamma=0.5
+        )
+        
+        # Losses
         self.l1_loss = nn.L1Loss()
+        
+        # Optional: Perceptual loss for better quality
+        try:
+            self.perceptual_loss = VGGPerceptualLoss().to(self.device)
+            self.use_perceptual = True
+        except:
+            self.use_perceptual = False
+            print("Warning: VGG Perceptual loss not available, using L1 only")
         
     def train_step(self, batch: dict) -> dict:
         """Single GMM training step."""
@@ -110,34 +123,61 @@ class GMMTrainer(BaseTrainer):
         # Extract cloth region from ground truth image using parsing mask
         cloth_region_mask = body_shape  # Upper clothes region (B, 1, H, W)
         
-        # Loss 1: Warped cloth should match the cloth region on the person
-        # Mask both warped_cloth and ground truth to only compare cloth region
+        # Loss 1: L1 loss - Warped cloth should match the cloth region on the person
         gt_cloth_region = image * cloth_region_mask
         pred_cloth_region = warped_cloth * cloth_region_mask
+        loss_l1 = self.l1_loss(pred_cloth_region, gt_cloth_region)
         
-        loss_cloth = self.l1_loss(pred_cloth_region, gt_cloth_region)
+        # Loss 2: Perceptual loss for better visual quality
+        if self.use_perceptual and cloth_region_mask.sum() > 0:
+            loss_perceptual = self.perceptual_loss(pred_cloth_region, gt_cloth_region) * 0.1
+        else:
+            loss_perceptual = torch.tensor(0.0, device=self.device)
         
-        # Loss 2: Warped mask should match the body shape
+        # Loss 3: Warped mask should match the body shape
         if warped_mask is not None:
             loss_mask = self.l1_loss(warped_mask, cloth_region_mask)
         else:
             loss_mask = torch.tensor(0.0, device=self.device)
         
+        # Loss 4: Second-order smoothness regularization on grid
+        grid = output.get('grid', None)
+        if grid is not None:
+            # Encourage smooth deformation
+            loss_smooth = self._grid_smoothness_loss(grid) * 0.01
+        else:
+            loss_smooth = torch.tensor(0.0, device=self.device)
+        
         # Regularization on theta to prevent extreme deformations
         theta = output['theta']
         theta_reg = torch.mean(theta ** 2) * 0.001
         
-        total_loss = loss_cloth + 0.5 * loss_mask + theta_reg
+        total_loss = loss_l1 + loss_perceptual + 0.5 * loss_mask + loss_smooth + theta_reg
         
         total_loss.backward()
         self.optimizer.step()
         
         return {
             'total': total_loss.item(),
-            'l1_cloth': loss_cloth.item(),
+            'l1_cloth': loss_l1.item(),
+            'perceptual': loss_perceptual.item() if isinstance(loss_perceptual, torch.Tensor) else loss_perceptual,
             'l1_mask': loss_mask.item() if isinstance(loss_mask, torch.Tensor) else loss_mask,
+            'smooth': loss_smooth.item() if isinstance(loss_smooth, torch.Tensor) else loss_smooth,
             'theta_reg': theta_reg.item()
         }
+    
+    def _grid_smoothness_loss(self, grid: torch.Tensor) -> torch.Tensor:
+        """Second-order smoothness loss for deformation grid."""
+        # grid: (B, H, W, 2)
+        # Compute second derivatives
+        dx = grid[:, :, 1:, :] - grid[:, :, :-1, :]  # (B, H, W-1, 2)
+        dy = grid[:, 1:, :, :] - grid[:, :-1, :, :]  # (B, H-1, W, 2)
+        
+        # Second derivatives
+        dx2 = dx[:, :, 1:, :] - dx[:, :, :-1, :]
+        dy2 = dy[:, 1:, :, :] - dy[:, :-1, :, :]
+        
+        return torch.mean(dx2 ** 2) + torch.mean(dy2 ** 2)
         
     def validate_step(self, batch: dict) -> dict:
         """Single GMM validation step."""

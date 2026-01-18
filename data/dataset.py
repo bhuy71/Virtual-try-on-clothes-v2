@@ -76,6 +76,9 @@ class VITONDataset(Dataset):
         pairs_file = os.path.join(data_root, f'{split}_pairs.txt')
         self.pairs = self._load_pairs(pairs_file)
         
+        # Data augmentation flag
+        self.augment = (split == 'train')
+        
         # Set up transforms
         if transform is None:
             self.transform = transforms.Compose([
@@ -85,6 +88,11 @@ class VITONDataset(Dataset):
             ])
         else:
             self.transform = transform
+        
+        # Augmentation transforms (applied before main transform)
+        self.color_jitter = transforms.ColorJitter(
+            brightness=0.1, contrast=0.1, saturation=0.1, hue=0.05
+        )
             
         self.mask_transform = transforms.Compose([
             transforms.Resize(image_size, interpolation=transforms.InterpolationMode.NEAREST),
@@ -92,23 +100,46 @@ class VITONDataset(Dataset):
         ])
         
     def _load_pairs(self, pairs_file: str) -> List[Tuple[str, str]]:
-        """Load image-cloth pairs from file."""
+        """
+        Load image-cloth pairs.
+        
+        For TRAINING: Use paired data (same person-cloth ID) for supervised learning.
+        For INFERENCE: Can use unpaired data (different person-cloth).
+        
+        VITON-HD structure:
+        - image/00001_00.jpg (person wearing cloth)
+        - cloth/00001_00.jpg (same cloth, extracted)
+        """
         pairs = []
         
-        if os.path.exists(pairs_file):
-            with open(pairs_file, 'r') as f:
-                for line in f:
-                    parts = line.strip().split()
-                    if len(parts) >= 2:
-                        pairs.append((parts[0], parts[1]))
-        else:
-            # Auto-generate pairs from image directory
-            print(f"Warning: {pairs_file} not found. Auto-generating pairs...")
+        # For training: Generate PAIRED data (same ID) instead of using unpaired pairs file
+        # This is crucial for supervised learning with ground truth
+        if self.split == 'train':
+            # Generate paired data: each person with their own cloth
             if os.path.exists(self.image_dir):
                 for img_file in sorted(os.listdir(self.image_dir)):
                     if img_file.endswith(('.jpg', '.png')):
-                        cloth_file = img_file.replace('_0.jpg', '_1.jpg')
-                        pairs.append((img_file, cloth_file))
+                        # Use same filename for cloth (paired)
+                        cloth_file = img_file
+                        # Check if cloth exists
+                        cloth_path = os.path.join(self.cloth_dir, cloth_file)
+                        if os.path.exists(cloth_path):
+                            pairs.append((img_file, cloth_file))
+                print(f"Generated {len(pairs)} paired samples for training")
+        else:
+            # For test/inference: Use pairs file (can be unpaired)
+            if os.path.exists(pairs_file):
+                with open(pairs_file, 'r') as f:
+                    for line in f:
+                        parts = line.strip().split()
+                        if len(parts) >= 2:
+                            pairs.append((parts[0], parts[1]))
+            else:
+                # Fallback to paired
+                if os.path.exists(self.image_dir):
+                    for img_file in sorted(os.listdir(self.image_dir)):
+                        if img_file.endswith(('.jpg', '.png')):
+                            pairs.append((img_file, img_file))
                         
         return pairs
         
@@ -196,9 +227,16 @@ class VITONDataset(Dataset):
         """Get a sample from the dataset."""
         image_name, cloth_name = self.pairs[idx]
         
+        # Random horizontal flip for augmentation
+        do_flip = self.augment and torch.rand(1).item() > 0.5
+        
         # Load person image
         image_path = os.path.join(self.image_dir, image_name)
         person_image = Image.open(image_path).convert('RGB')
+        if do_flip:
+            person_image = person_image.transpose(Image.FLIP_LEFT_RIGHT)
+        if self.augment:
+            person_image = self.color_jitter(person_image)
         person = self.transform(person_image)
         
         # Load cloth image
@@ -207,6 +245,10 @@ class VITONDataset(Dataset):
             cloth_image = Image.open(cloth_path).convert('RGB')
         else:
             cloth_image = Image.new('RGB', self.image_size[::-1], (255, 255, 255))
+        if do_flip:
+            cloth_image = cloth_image.transpose(Image.FLIP_LEFT_RIGHT)
+        if self.augment:
+            cloth_image = self.color_jitter(cloth_image)
         cloth = self.transform(cloth_image)
         
         # Load cloth mask
@@ -216,6 +258,8 @@ class VITONDataset(Dataset):
         )
         if os.path.exists(cloth_mask_path):
             cloth_mask = Image.open(cloth_mask_path).convert('L')
+            if do_flip:
+                cloth_mask = cloth_mask.transpose(Image.FLIP_LEFT_RIGHT)
             cloth_mask = self.mask_transform(cloth_mask)
         else:
             cloth_mask = torch.ones(1, *self.image_size)
@@ -224,6 +268,8 @@ class VITONDataset(Dataset):
         agnostic_path = os.path.join(self.agnostic_dir, image_name)
         if os.path.exists(agnostic_path):
             agnostic = Image.open(agnostic_path).convert('RGB')
+            if do_flip:
+                agnostic = agnostic.transpose(Image.FLIP_LEFT_RIGHT)
             agnostic = self.transform(agnostic)
         else:
             agnostic = person.clone()
@@ -234,6 +280,9 @@ class VITONDataset(Dataset):
             image_name.replace('.jpg', '.json').replace('.png', '.json')
         )
         pose = self._load_pose(pose_path)
+        if do_flip:
+            pose = torch.flip(pose, dims=[2])  # Flip horizontally
+            # Also swap left/right keypoints (indices need to be swapped)
         
         # Load parsing
         parse_path = os.path.join(
@@ -241,6 +290,8 @@ class VITONDataset(Dataset):
             image_name.replace('.jpg', '.png')
         )
         parse = self._load_parse(parse_path)
+        if do_flip:
+            parse = torch.flip(parse, dims=[2])  # Flip horizontally
         
         return {
             'image': person,
