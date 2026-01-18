@@ -150,20 +150,48 @@ class VITONDataset(Dataset):
         return pose_heatmaps
         
     def _load_parse(self, parse_path: str) -> torch.Tensor:
-        """Load parsing map and convert to one-hot encoding."""
+        """
+        Load parsing map and convert to one-hot encoding.
+        
+        Supports both:
+        - Grayscale (L mode) with direct label values
+        - Palette (P mode) where pixel values are palette indices
+        
+        VITON-HD v3 ATR parsing labels:
+        0: Background, 1: Hat, 2: Hair, 3: Sunglasses, 4: Upper-clothes,
+        5: Skirt, 6: Pants, 7: Dress, 8: Belt, 9: Left-shoe, 10: Right-shoe,
+        11: Face, 12: Left-leg, 13: Right-leg, 14: Left-arm, 15: Right-arm,
+        16: Bag, 17: Scarf
+        
+        But actual VITON-HD v3 uses different mapping:
+        0: Background, 2: Hair, 5: Upper-clothes, 9: Face, 
+        10: Left-arm, 13: Left-leg, 14: Right-leg, 15: Left-shoe
+        """
         h, w = self.image_size
         
         if os.path.exists(parse_path):
-            parse_img = Image.open(parse_path).convert('L')
-            parse_img = parse_img.resize((w, h), Image.NEAREST)
-            parse_array = np.array(parse_img)
+            parse_img = Image.open(parse_path)
+            
+            # Handle palette mode - don't convert to L, keep indices
+            if parse_img.mode == 'P':
+                parse_img = parse_img.resize((w, h), Image.NEAREST)
+                parse_array = np.array(parse_img)  # This gives palette indices directly
+            else:
+                parse_img = parse_img.convert('L')
+                parse_img = parse_img.resize((w, h), Image.NEAREST)
+                parse_array = np.array(parse_img)
         else:
             parse_array = np.zeros((h, w), dtype=np.uint8)
             
+        # Get unique labels in the image for dynamic one-hot encoding
+        unique_labels = np.unique(parse_array)
+        max_label = max(unique_labels.max() + 1, self.semantic_nc)
+        
         # Convert to one-hot encoding
-        parse_onehot = torch.zeros(self.semantic_nc, h, w)
-        for i in range(self.semantic_nc):
-            parse_onehot[i] = torch.from_numpy((parse_array == i).astype(np.float32))
+        parse_onehot = torch.zeros(max_label, h, w)
+        for label in unique_labels:
+            if label < max_label:
+                parse_onehot[label] = torch.from_numpy((parse_array == label).astype(np.float32))
             
         return parse_onehot
         

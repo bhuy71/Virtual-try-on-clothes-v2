@@ -38,6 +38,30 @@ from data.dataset import VITONDataset
 from train.trainer import BaseTrainer, load_config
 
 
+def get_upper_clothes_mask(parse: torch.Tensor) -> torch.Tensor:
+    """
+    Extract upper clothes mask from parsing tensor.
+    
+    VITON-HD v3 uses label 5 for upper-clothes.
+    Falls back to label 4 for standard VITON format.
+    
+    Args:
+        parse: One-hot encoded parsing tensor (B, C, H, W)
+        
+    Returns:
+        Upper clothes mask (B, 1, H, W)
+    """
+    if parse.shape[1] > 5:
+        # VITON-HD v3: upper-clothes = label 5
+        return parse[:, 5:6]
+    elif parse.shape[1] > 4:
+        # Standard VITON: upper-clothes = label 4
+        return parse[:, 4:5]
+    else:
+        # Fallback: sum all non-background as body region
+        return parse[:, 1:].sum(dim=1, keepdim=True).clamp(0, 1)
+
+
 class GMMTrainer(BaseTrainer):
     """Trainer for Geometric Matching Module."""
     
@@ -72,8 +96,7 @@ class GMMTrainer(BaseTrainer):
         image = batch['image'].to(self.device)  # Ground truth person wearing cloth
         
         # Create GMM input (pose + body shape)
-        # Body shape: upper body region from parsing
-        body_shape = parse[:, 4:5]  # Upper clothes channel as body shape
+        body_shape = get_upper_clothes_mask(parse)
         gmm_input = torch.cat([pose, body_shape], dim=1)
         
         # Forward pass
@@ -124,7 +147,7 @@ class GMMTrainer(BaseTrainer):
         parse = batch['parse'].to(self.device)
         image = batch['image'].to(self.device)
         
-        body_shape = parse[:, 4:5]
+        body_shape = get_upper_clothes_mask(parse)
         gmm_input = torch.cat([pose, body_shape], dim=1)
         
         output = self.model(gmm_input, cloth, cloth_mask)
@@ -185,9 +208,11 @@ class TOMTrainer(BaseTrainer):
         pose = batch['pose'].to(self.device)
         parse = batch['parse'].to(self.device)
         
+        # Get upper clothes mask
+        body_shape = get_upper_clothes_mask(parse)
+        
         # Get warped cloth from frozen GMM
         with torch.no_grad():
-            body_shape = parse[:, 4:5]
             gmm_input = torch.cat([pose, body_shape], dim=1)
             gmm_output = self.gmm(gmm_input, cloth, cloth_mask)
             warped_cloth = gmm_output['warped_cloth']
@@ -210,7 +235,7 @@ class TOMTrainer(BaseTrainer):
         perceptual_loss = self.perceptual_loss(output, image)
         
         # Mask loss: encourage mask to match cloth region
-        target_mask = (parse[:, 4:5] > 0.5).float()  # Upper clothes region
+        target_mask = (body_shape > 0.5).float()  # Upper clothes region
         mask_loss = self.l1_loss(mask, target_mask)
         
         total_loss = (
@@ -238,7 +263,7 @@ class TOMTrainer(BaseTrainer):
         pose = batch['pose'].to(self.device)
         parse = batch['parse'].to(self.device)
         
-        body_shape = parse[:, 4:5]
+        body_shape = get_upper_clothes_mask(parse)
         gmm_input = torch.cat([pose, body_shape], dim=1)
         gmm_output = self.gmm(gmm_input, cloth, cloth_mask)
         warped_cloth = gmm_output['warped_cloth']
