@@ -57,13 +57,20 @@ class VITONDataset(Dataset):
         self.image_size = image_size
         self.semantic_nc = semantic_nc
         
-        # Set up directories
+        # Set up directories - support both standard and VITON-HD v3 naming
         self.image_dir = os.path.join(data_root, split, 'image')
         self.cloth_dir = os.path.join(data_root, split, 'cloth')
         self.cloth_mask_dir = os.path.join(data_root, split, 'cloth-mask')
-        self.parse_dir = os.path.join(data_root, split, 'image-parse')
-        self.agnostic_dir = os.path.join(data_root, split, 'agnostic')
-        self.pose_dir = os.path.join(data_root, split, 'openpose-json')
+        
+        # Parse directory: try 'image-parse-v3' first, fallback to 'image-parse'
+        parse_v3 = os.path.join(data_root, split, 'image-parse-v3')
+        self.parse_dir = parse_v3 if os.path.exists(parse_v3) else os.path.join(data_root, split, 'image-parse')
+        
+        # Agnostic directory: try 'agnostic-v3.2' first, fallback to 'agnostic'
+        agnostic_v3 = os.path.join(data_root, split, 'agnostic-v3.2')
+        self.agnostic_dir = agnostic_v3 if os.path.exists(agnostic_v3) else os.path.join(data_root, split, 'agnostic')
+        
+        self.pose_dir = os.path.join(data_root, split, 'openpose_json')
         
         # Load pairs
         pairs_file = os.path.join(data_root, f'{split}_pairs.txt')
