@@ -76,7 +76,7 @@ class FeatureCorrelation(nn.Module):
 class FeatureRegression(nn.Module):
     """Regression network to predict TPS parameters from correlation."""
     
-    def __init__(self, input_nc: int, output_size: int = 2 * 5 * 5):
+    def __init__(self, input_nc: int, output_size: int = 2 * 5 * 5, input_size: Tuple[int, int] = (16, 12)):
         super().__init__()
         
         self.conv = nn.Sequential(
@@ -97,7 +97,13 @@ class FeatureRegression(nn.Module):
             nn.ReLU(inplace=True),
         )
         
-        self.fc = nn.Linear(64 * 6 * 4, output_size)  # Adjust based on input size
+        # Calculate fc input size based on input_size after 2 stride-2 convs
+        # Input: (h, w) -> after 2x stride-2: (h//4, w//4)
+        fc_h = input_size[0] // 4
+        fc_w = input_size[1] // 4
+        self.fc_input_size = 64 * fc_h * fc_w
+        
+        self.fc = nn.Linear(self.fc_input_size, output_size)
         
         # Initialize to identity transformation
         self.fc.weight.data.zero_()
@@ -284,11 +290,12 @@ class GMM(nn.Module):
         
         # Regression to TPS parameters
         # Input: correlation feature map (h*w channels)
-        h = image_size[0] // 16  # After 4 downsampling
+        h = image_size[0] // 16  # After 4 downsampling in FeatureExtraction
         w = image_size[1] // 16
         self.regression = FeatureRegression(
             input_nc=h * w,
-            output_size=2 * grid_size * grid_size
+            output_size=2 * grid_size * grid_size,
+            input_size=(h, w)  # Pass feature map size for fc layer calculation
         )
         
         # TPS transformation
