@@ -87,8 +87,17 @@ class HRVITONTrainer(BaseTrainer):
             self.scheduler_G = None
             self.scheduler_D = None
             
-        # Loss function
-        loss_weights = config.get('loss', {})
+        # Loss function with default weights
+        default_weights = {
+            'adversarial': 1.0,
+            'feature_matching': 10.0,
+            'perceptual': 10.0,
+            'l1': 10.0,
+            'seg': 1.0,
+            'flow': 0.1,
+        }
+        # Merge config weights with defaults
+        loss_weights = {**default_weights, **config.get('loss', {})}
         self.criterion = HRVITONLoss(weights=loss_weights, device=self.device)
         
         # Sample directory for visualization
