@@ -220,6 +220,10 @@ class AppearanceFlowEstimator(nn.Module):
         """Warp image using flow field."""
         b, c, h, w = x.shape
         
+        # Resize flow to match input dimensions if needed
+        if flow.shape[2:] != (h, w):
+            flow = F.interpolate(flow, size=(h, w), mode='bilinear', align_corners=True)
+        
         # Create sampling grid
         grid_x, grid_y = torch.meshgrid(
             torch.linspace(-1, 1, w, device=x.device),
