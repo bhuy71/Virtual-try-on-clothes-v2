@@ -324,7 +324,13 @@ class GMM(nn.Module):
         """
         # Extract features
         feat_person = self.feature_person(person)
-        feat_cloth = self.feature_cloth(cloth)
+        
+        # Concat cloth + mask if input_nc_cloth > 3
+        if cloth_mask is not None and self.feature_cloth.model[0].in_channels > 3:
+            cloth_input = torch.cat([cloth, cloth_mask], dim=1)
+        else:
+            cloth_input = cloth
+        feat_cloth = self.feature_cloth(cloth_input)
         
         # Compute correlation
         corr = self.correlation(feat_person, feat_cloth)

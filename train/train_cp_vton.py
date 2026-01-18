@@ -280,7 +280,7 @@ def train_gmm(config: dict, device: torch.device):
     gmm_config = config.get('gmm', {})
     model = GMM(
         input_nc_person=gmm_config.get('input_nc', 19),
-        input_nc_cloth=3,
+        input_nc_cloth=4,  # cloth (3) + mask (1)
         ngf=gmm_config.get('ngf', 64),
         grid_size=gmm_config.get('grid_size', 5),
         image_size=image_size
@@ -349,7 +349,7 @@ def train_tom(config: dict, device: torch.device, gmm_checkpoint: str = None):
     gmm_config = config.get('gmm', {})
     gmm = GMM(
         input_nc_person=gmm_config.get('input_nc', 19),
-        input_nc_cloth=3,
+        input_nc_cloth=4,  # cloth (3) + mask (1)
         ngf=gmm_config.get('ngf', 64),
         grid_size=gmm_config.get('grid_size', 5),
         image_size=image_size
