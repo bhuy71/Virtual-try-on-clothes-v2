@@ -7,3 +7,4 @@ checkpoints/
 outputs/
 *.zip
 .ipynb_checkpoints/
+kaggle_notebook.py
