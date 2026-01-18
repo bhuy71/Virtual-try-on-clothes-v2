@@ -69,7 +69,7 @@ class GMMTrainer(BaseTrainer):
         cloth_mask = batch['cloth_mask'].to(self.device)
         pose = batch['pose'].to(self.device)
         parse = batch['parse'].to(self.device)
-        image = batch['image'].to(self.device)  # Ground truth
+        image = batch['image'].to(self.device)  # Ground truth person wearing cloth
         
         # Create GMM input (pose + body shape)
         # Body shape: upper body region from parsing
@@ -80,25 +80,39 @@ class GMMTrainer(BaseTrainer):
         self.optimizer.zero_grad()
         output = self.model(gmm_input, cloth, cloth_mask)
         
-        # Loss: L1 between warped cloth and ground truth cloth region
         warped_cloth = output['warped_cloth']
+        warped_mask = output.get('warped_mask', None)
         
-        # Use the cloth region from ground truth image
-        # In practice, we use the cloth in the original position
-        loss = self.l1_loss(warped_cloth, cloth)  # Self-reconstruction
+        # === CORRECT LOSS: Compare warped cloth with cloth region ON THE PERSON ===
+        # Extract cloth region from ground truth image using parsing mask
+        cloth_region_mask = body_shape  # Upper clothes region (B, 1, H, W)
         
-        # Optional: Add regularization on theta
+        # Loss 1: Warped cloth should match the cloth region on the person
+        # Mask both warped_cloth and ground truth to only compare cloth region
+        gt_cloth_region = image * cloth_region_mask
+        pred_cloth_region = warped_cloth * cloth_region_mask
+        
+        loss_cloth = self.l1_loss(pred_cloth_region, gt_cloth_region)
+        
+        # Loss 2: Warped mask should match the body shape
+        if warped_mask is not None:
+            loss_mask = self.l1_loss(warped_mask, cloth_region_mask)
+        else:
+            loss_mask = torch.tensor(0.0, device=self.device)
+        
+        # Regularization on theta to prevent extreme deformations
         theta = output['theta']
-        theta_reg = torch.mean(theta ** 2) * 0.01
+        theta_reg = torch.mean(theta ** 2) * 0.001
         
-        total_loss = loss + theta_reg
+        total_loss = loss_cloth + 0.5 * loss_mask + theta_reg
         
         total_loss.backward()
         self.optimizer.step()
         
         return {
             'total': total_loss.item(),
-            'l1': loss.item(),
+            'l1_cloth': loss_cloth.item(),
+            'l1_mask': loss_mask.item() if isinstance(loss_mask, torch.Tensor) else loss_mask,
             'theta_reg': theta_reg.item()
         }
         
@@ -108,6 +122,7 @@ class GMMTrainer(BaseTrainer):
         cloth_mask = batch['cloth_mask'].to(self.device)
         pose = batch['pose'].to(self.device)
         parse = batch['parse'].to(self.device)
+        image = batch['image'].to(self.device)
         
         body_shape = parse[:, 4:5]
         gmm_input = torch.cat([pose, body_shape], dim=1)
@@ -115,7 +130,12 @@ class GMMTrainer(BaseTrainer):
         output = self.model(gmm_input, cloth, cloth_mask)
         warped_cloth = output['warped_cloth']
         
-        loss = self.l1_loss(warped_cloth, cloth)
+        # Compare warped cloth with cloth region on person
+        cloth_region_mask = body_shape
+        gt_cloth_region = image * cloth_region_mask
+        pred_cloth_region = warped_cloth * cloth_region_mask
+        
+        loss = self.l1_loss(pred_cloth_region, gt_cloth_region)
         
         return {'l1': loss.item()}
 
