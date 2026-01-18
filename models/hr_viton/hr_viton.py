@@ -34,7 +34,7 @@ class HRVITON(nn.Module):
     def __init__(
         self,
         image_size: Tuple[int, int] = (1024, 768),
-        semantic_nc: int = 13,
+        semantic_nc: int = 20,  # VITON-HD v3 uses 20 labels (changed from 13)
         pose_nc: int = 18,
         ngf: int = 64,
         ndf: int = 64
@@ -42,7 +42,7 @@ class HRVITON(nn.Module):
         """
         Args:
             image_size: Target image size (height, width)
-            semantic_nc: Number of semantic parsing classes
+            semantic_nc: Number of semantic parsing classes (20 for VITON-HD v3)
             pose_nc: Number of pose keypoint channels
             ngf: Base number of generator filters
             ndf: Base number of discriminator filters

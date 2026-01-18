@@ -327,7 +327,7 @@ class ConditionGenerator(nn.Module):
     
     def __init__(
         self,
-        semantic_nc: int = 13,
+        semantic_nc: int = 20,  # VITON-HD v3 uses 20 labels (changed from 13)
         ngf: int = 64
     ):
         super().__init__()

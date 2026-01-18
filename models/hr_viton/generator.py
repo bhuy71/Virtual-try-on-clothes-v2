@@ -226,11 +226,21 @@ class HRGenerator(nn.Module):
         # Upsampling with SPADE
         self.up_layers = nn.ModuleList()
         self.up_spades = nn.ModuleList()
+        self.skip_convs = nn.ModuleList()  # Projection for skip connections
         
         for i in range(n_downsampling):
             out_ch = max(in_ch // 2, ngf)
             self.up_layers.append(AliasFreeUpsample(in_ch, out_ch))
             self.up_spades.append(SPADEResBlock(out_ch, out_ch, label_nc))
+            
+            # Project skip connection to match output channels
+            # Skip channels from encoder (reverse order)
+            skip_ch = min(ngf * (2 ** (n_downsampling - i - 1)), 512) if i < n_downsampling - 1 else ngf
+            if skip_ch != out_ch:
+                self.skip_convs.append(nn.Conv2d(skip_ch, out_ch, 1))
+            else:
+                self.skip_convs.append(nn.Identity())
+            
             in_ch = out_ch
             
         # Final output
@@ -280,15 +290,18 @@ class HRGenerator(nn.Module):
             x = spade_block(x, cond)
             
         # Decoder
-        for i, (up, up_spade) in enumerate(zip(self.up_layers, self.up_spades)):
+        for i, (up, up_spade, skip_conv) in enumerate(zip(self.up_layers, self.up_spades, self.skip_convs)):
             x = up(x)
             x = up_spade(x, cond)
             
             # Skip connection
             if i < len(skips):
                 skip = skips[-(i+1)]
+                # Resize spatially if needed
                 if x.shape[2:] != skip.shape[2:]:
-                    x = F.interpolate(x, size=skip.shape[2:], mode='bilinear', align_corners=True)
+                    skip = F.interpolate(skip, size=x.shape[2:], mode='bilinear', align_corners=True)
+                # Project channels to match
+                skip = skip_conv(skip)
                 x = x + skip
                 
         # Output
