@@ -26,8 +26,11 @@ from torch.utils.data import DataLoader
 from tqdm import tqdm
 import yaml
 
-# Add parent directory to path
-sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+# Add parent directory to path - fix for Kaggle/notebook imports
+_current_dir = os.path.dirname(os.path.abspath(__file__))
+_parent_dir = os.path.dirname(_current_dir)
+if _parent_dir not in sys.path:
+    sys.path.insert(0, _parent_dir)
 
 from models.cp_vton import CPVTON, GMM, TOMComplete
 from models.networks.losses import VGGPerceptualLoss

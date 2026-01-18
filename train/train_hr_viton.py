@@ -25,8 +25,11 @@ from tqdm import tqdm
 import yaml
 from typing import Dict, Any, Optional
 
-# Add parent directory to path
-sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+# Add parent directory to path - fix for Kaggle/notebook imports
+_current_dir = os.path.dirname(os.path.abspath(__file__))
+_parent_dir = os.path.dirname(_current_dir)
+if _parent_dir not in sys.path:
+    sys.path.insert(0, _parent_dir)
 
 from models.hr_viton import HRVITON, HRVITONLoss, build_hr_viton
 from data.dataset import VITONHDDataset
