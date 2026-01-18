@@ -268,7 +268,7 @@ class GMM(nn.Module):
     
     def __init__(
         self,
-        input_nc_person: int = 22,  # Pose heatmaps + body shape
+        input_nc_person: int = 19,  # Pose heatmaps (18) + body shape (1)
         input_nc_cloth: int = 3,
         ngf: int = 64,
         grid_size: int = 5,
