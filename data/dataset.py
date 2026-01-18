@@ -158,16 +158,16 @@ class VITONDataset(Dataset):
         - Palette (P mode) where pixel values are palette indices
         
         VITON-HD v3 ATR parsing labels:
-        0: Background, 1: Hat, 2: Hair, 3: Sunglasses, 4: Upper-clothes,
-        5: Skirt, 6: Pants, 7: Dress, 8: Belt, 9: Left-shoe, 10: Right-shoe,
-        11: Face, 12: Left-leg, 13: Right-leg, 14: Left-arm, 15: Right-arm,
-        16: Bag, 17: Scarf
-        
-        But actual VITON-HD v3 uses different mapping:
         0: Background, 2: Hair, 5: Upper-clothes, 9: Face, 
-        10: Left-arm, 13: Left-leg, 14: Right-leg, 15: Left-shoe
+        10: Left-arm, 13: Left-leg, 14: Right-leg, 15: Left-shoe, etc.
+        
+        We use a fixed size of 20 channels to cover all possible labels.
         """
         h, w = self.image_size
+        
+        # Fixed number of channels to ensure consistent tensor size across batch
+        # Use 20 to cover labels 0-19 (VITON-HD v3 uses labels up to ~15)
+        num_channels = 20
         
         if os.path.exists(parse_path):
             parse_img = Image.open(parse_path)
@@ -183,14 +183,11 @@ class VITONDataset(Dataset):
         else:
             parse_array = np.zeros((h, w), dtype=np.uint8)
             
-        # Get unique labels in the image for dynamic one-hot encoding
+        # Convert to one-hot encoding with fixed size
+        parse_onehot = torch.zeros(num_channels, h, w)
         unique_labels = np.unique(parse_array)
-        max_label = max(unique_labels.max() + 1, self.semantic_nc)
-        
-        # Convert to one-hot encoding
-        parse_onehot = torch.zeros(max_label, h, w)
         for label in unique_labels:
-            if label < max_label:
+            if label < num_channels:
                 parse_onehot[label] = torch.from_numpy((parse_array == label).astype(np.float32))
             
         return parse_onehot
